@@ -1,0 +1,16 @@
+# 開発用: Nuxt を HMR 付きで動かすためのコンテナ
+FROM node:22-bookworm-slim
+
+# pnpm を corepack 経由で有効化
+RUN corepack enable
+
+WORKDIR /app
+
+# 依存関係のインストール（ソースはボリュームマウントするので lockfile のみ先にコピー）
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+EXPOSE 3000
+
+# HMR がホストからアクセスできるよう 0.0.0.0 で待ち受け（package.json の dev に --host 済み）
+CMD ["pnpm", "dev"]

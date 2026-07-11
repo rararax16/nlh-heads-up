@@ -1,0 +1,34 @@
+name: Deploy DB migrations
+
+# main へ push されたら本番 Supabase にマイグレーションを適用する。
+# アプリ本体のデプロイは Vercel の GitHub 連携が別途行う（このジョブは DB スキーマ専用）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/db-migrate.yml'
+  # 手動実行も可能にしておく（初回適用や再実行用）
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link to production project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      # 適用済みマイグレーションは履歴テーブルでスキップされる（冪等）。
+      # 失敗した場合はここでジョブが止まり、壊れたスキーマは適用されない。
+      - name: Push migrations
+        run: supabase db push

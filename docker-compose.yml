@@ -1,0 +1,31 @@
+# Nuxt アプリの開発コンテナ。
+# Supabase のバックエンド（Postgres/Realtime/Auth/Studio）は
+# ホスト側で `pnpm db:start`（= supabase start）により起動する別スタックです。
+# アプリコンテナからは host.docker.internal 経由でそれらへ接続します。
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - '3000:3000'
+    volumes:
+      # ソースをマウントして HMR。ただし node_modules はコンテナ内のものを使う
+      - ./:/app
+      - /app/node_modules
+      - /app/.nuxt
+    environment:
+      # クライアント（ブラウザ）用 URL: ブラウザはホスト上で動くので 127.0.0.1
+      SUPABASE_URL: http://127.0.0.1:54321
+      # サーバー（コンテナ内 Nitro）用 URL: コンテナからホストへは host.docker.internal
+      SUPABASE_SERVER_URL: http://host.docker.internal:54321
+      SUPABASE_KEY: ${SUPABASE_KEY}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      # Nuxt dev サーバーをコンテナ外から見えるように 0.0.0.0 で待ち受け
+      HOST: 0.0.0.0
+      PORT: '3000'
+      NUXT_HOST: 0.0.0.0
+      NUXT_PORT: '3000'
+      CHOKIDAR_USEPOLLING: 'true'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'

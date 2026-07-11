@@ -1,0 +1,14 @@
+node_modules
+.nuxt
+.output
+.nitro
+.cache
+dist
+.git
+.env
+.env.*
+!.env.example
+supabase/.temp
+.vercel
+*.log
+.DS_Store
