@@ -60,7 +60,11 @@ export async function createRoom(db: DB, input: CreateRoomInput): Promise<{ code
     1,
     Math.min(Math.floor(input.chipUnit ?? 100), rawStructure[0]?.bb ?? 1),
   )
-  const structure = snapStructureToChipUnit(rawStructure, chipUnit)
+  let structure = snapStructureToChipUnit(rawStructure, chipUnit)
+  // アンティなしの部屋は構造上も ante を 0 にする（表示・保存の整合）
+  if ((input.anteMode ?? 'bb') === 'none') {
+    structure = structure.map((l) => ({ ...l, ante: 0 }))
+  }
 
   // 一意なコードを確保（衝突時リトライ）
   let code = randomCode()
@@ -343,7 +347,9 @@ export async function buildRoomView(
     blindStructure: structure,
     chipUnit: room.chip_unit ?? 1, // マイグレーション前の部屋は制限なし
   }
-  const level = currentLevel(room.started_at, room.blind_interval_seconds, structure)
+  const levelRaw = currentLevel(room.started_at, room.blind_interval_seconds, structure)
+  // アンティなしの部屋（過去に ante 入り構造で作られたものを含む）は ante を 0 として返す
+  const level = room.ante_mode === 'none' ? { ...levelRaw, ante: 0 } : levelRaw
 
   let handPublic = null
   let myCards = null

@@ -125,6 +125,14 @@ const oppPillLabel = computed(() => {
   return null
 })
 
+// 結果の勝敗（バナーの色分け用）
+const resultOutcome = computed<'win' | 'lose' | 'split' | null>(() => {
+  const r = hand.value?.result
+  if (!r || yourSeat.value === null) return null
+  if (r.winners.length > 1) return 'split'
+  return r.winners[0] === yourSeat.value ? 'win' : 'lose'
+})
+
 // 表示用ポット: 現ストリートの未確定ベット（ピルで表示中）はポットに含めない
 const displayPot = computed(() => {
   const h = hand.value
@@ -453,9 +461,13 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
             <div v-if="turnFlash && !hand.result" class="turn-flash">あなたの番です</div>
           </transition>
 
-          <!-- 結果バナー（ボードを隠さないよう、ボード下の帯に表示） -->
+          <!-- 結果バナー（ボードを隠さないよう、ボード下の帯に表示。勝敗で色分け） -->
           <transition name="result-pop">
-            <div v-if="hand.result && resultVisible" class="result">
+            <div
+              v-if="hand.result && resultVisible"
+              class="result"
+              :class="resultOutcome ? `result--${resultOutcome}` : ''"
+            >
               <template v-if="hand.result.reason === 'fold'">
                 <div class="result__title">
                   {{ hand.result.winners[0] === yourSeat ? 'あなたがポット獲得' : `${opponent?.displayName} がポット獲得` }}
@@ -1024,6 +1036,37 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   font-weight: 800;
   font-size: 1.05rem;
   color: var(--text);
+}
+/* 勝敗の色分け: 勝ち=グリーン / 負け=レッド / スプリット=アンバー */
+.result--win {
+  border-color: rgba(43, 196, 126, 0.65);
+  background:
+    linear-gradient(180deg, rgba(43, 196, 126, 0.16), rgba(43, 196, 126, 0.02)),
+    var(--overlay);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 26px rgba(43, 196, 126, 0.35);
+}
+.result--win .result__title {
+  color: var(--accent);
+}
+.result--lose {
+  border-color: rgba(242, 86, 77, 0.6);
+  background:
+    linear-gradient(180deg, rgba(242, 86, 77, 0.14), rgba(242, 86, 77, 0.02)),
+    var(--overlay);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 26px rgba(242, 86, 77, 0.3);
+}
+.result--lose .result__title {
+  color: #ff8a80;
+}
+.result--split {
+  border-color: rgba(240, 178, 79, 0.55);
+  background:
+    linear-gradient(180deg, rgba(240, 178, 79, 0.14), rgba(240, 178, 79, 0.02)),
+    var(--overlay);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 24px rgba(240, 178, 79, 0.3);
+}
+.result--split .result__title {
+  color: var(--amber);
 }
 .result__sub {
   margin-top: 0.3rem;

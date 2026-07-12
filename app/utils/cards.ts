@@ -19,8 +19,10 @@ export function formatChips(n: number): string {
   return n.toLocaleString('en-US')
 }
 
+/** ブラインド表記。例: "BLINDS 100 / 200 - 200 [BB]"（[BB] は BB アンティ） */
 export function formatBlinds(sb: number, bb: number, ante: number): string {
-  return ante > 0 ? `${sb}/${bb} (アンティ${ante})` : `${sb}/${bb}`
+  const base = `BLINDS ${sb} / ${bb}`
+  return ante > 0 ? `${base} - ${ante} [BB]` : base
 }
 
 export function formatDuration(seconds: number): string {
