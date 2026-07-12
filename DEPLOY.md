@@ -67,6 +67,19 @@ DB（Supabase）とアプリ（Vercel 関数）は必ず同じ東京リージョ
 - Supabase: プロジェクト作成時に `ap-northeast-1`
 - Vercel: [vercel.json](vercel.json) の `"regions": ["hnd1"]` で固定済み
 
+## 定期掃除（pg_cron）
+
+ゲーム進行はクライアント駆動のため、放置された部屋は自然消滅しない。
+マイグレーション `20260712020000_zombie_cleanup.sql` が DB 内 cron
+（ジョブ名 `cleanup-stale-data-hourly`・毎時17分）で以下を実行する:
+
+- waiting 部屋: 作成24時間で削除
+- playing 部屋: ハンド更新2時間途絶で勝者なし終了（両者離脱の凍結対策）
+- finished 部屋: 決着7日で削除（配下データはカスケード）
+- 匿名ユーザー: 作成30日超かつ直近30日活動なしで削除
+
+状態確認: `select * from cron.job;` / 実行履歴: `select * from cron.job_run_details order by start_time desc limit 10;`
+
 ## 順序に関する注意
 
 マイグレーション（GitHub Actions）とアプリデプロイ（Vercel）は並行して走る。
