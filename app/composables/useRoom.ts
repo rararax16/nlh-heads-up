@@ -1,6 +1,15 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import type { RoomView } from '~~/shared/types'
 
+/** actions テーブルへの INSERT（実況表示用に Realtime で受け取る） */
+export interface ActionEvent {
+  hand_id: string
+  seat: number
+  type: 'fold' | 'check' | 'call' | 'bet' | 'raise' | 'allin'
+  amount: number
+  street: string
+}
+
 export function useRoom(code: string) {
   const supabase = useSupabaseClient()
   const api = useApi()
@@ -10,6 +19,8 @@ export function useRoom(code: string) {
   const now = ref(Date.now())
 
   let channel: RealtimeChannel | null = null
+  let emojiHandler: ((emoji: string, name: string) => void) | null = null
+  let actionHandler: ((a: ActionEvent) => void) | null = null
   let ticker: ReturnType<typeof setInterval> | null = null
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
   let handledTimeoutFor: string | null = null
@@ -52,7 +63,34 @@ export function useRoom(code: string) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hands', filter: `room_id=eq.${roomId}` }, scheduleReload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'room_players', filter: `room_id=eq.${roomId}` }, scheduleReload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, scheduleReload)
+      // アクションの実況（RLS により自分がメンバーの部屋の分のみ届く。
+      // actions に room_id 列は無いため、hand_id の照合は受信側で行う）
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'actions' }, (payload) => {
+        actionHandler?.(payload.new as ActionEvent)
+        scheduleReload()
+      })
+      // 相手からの絵文字リアクション（DB を介さない一時的な broadcast）
+      .on('broadcast', { event: 'emoji' }, ({ payload }) => {
+        const p = payload as { emoji?: string; name?: string } | null
+        if (p?.emoji) emojiHandler?.(p.emoji, p.name ?? '相手')
+      })
       .subscribe()
+  }
+
+  // 絵文字リアクションを相手へ送信（送信者名を同梱・自分側は呼び出し元で即時再生）
+  function sendEmoji(emoji: string) {
+    const name = state.value?.players.find((p) => p.isYou)?.displayName ?? ''
+    channel?.send({ type: 'broadcast', event: 'emoji', payload: { emoji, name } })
+  }
+
+  // 相手から届いた絵文字を受け取るハンドラを登録
+  function onEmoji(cb: (emoji: string, name: string) => void) {
+    emojiHandler = cb
+  }
+
+  // アクション発生（自分・相手とも）を受け取るハンドラを登録
+  function onAction(cb: (a: ActionEvent) => void) {
+    actionHandler = cb
   }
 
   // 1秒ごとに now を更新し、タイムアウト/次ハンドの自動処理を行う
@@ -112,7 +150,7 @@ export function useRoom(code: string) {
     if (channel) supabase.removeChannel(channel)
   })
 
-  return { state, error, loading, now, load, join, start, act }
+  return { state, error, loading, now, load, join, start, act, sendEmoji, onEmoji, onAction }
 }
 
 function errMsg(e: unknown): string {

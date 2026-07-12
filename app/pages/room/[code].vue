@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Card } from '~~/shared/types'
+import type { ActionEvent } from '~/composables/useRoom'
 
 const route = useRoute()
 const router = useRouter()
@@ -7,9 +8,13 @@ const code = String(route.params.code).toUpperCase()
 const displayName = useDisplayName()
 const activeRoom = useActiveRoom()
 
-const { state, error, loading, now, join, start, act } = useRoom(code)
+const { state, error, loading, now, join, start, act, sendEmoji, onEmoji, onAction } = useRoom(code)
 
 const joining = ref(false)
+
+// 相手から届いた絵文字リアクションを再生
+const reactionsRef = ref<{ receive: (emoji: string, name: string) => void } | null>(null)
+onEmoji((emoji, name) => reactionsRef.value?.receive(emoji, name))
 
 // 着席中はこの部屋を「戻り先」として保存（対局終了で解除）
 watch(state, (s) => {
@@ -64,6 +69,62 @@ onUnmounted(() => {
   if (turnFlashTimer) clearTimeout(turnFlashTimer)
 })
 
+// ---- 相手アクションの実況（3ベット等を見逃さないように吹き出し＋ピルで表示） ----
+const ACTION_LABEL: Record<ActionEvent['type'], string> = {
+  fold: 'フォールド',
+  check: 'チェック',
+  call: 'コール',
+  bet: 'ベット',
+  raise: 'レイズ',
+  allin: 'オールイン',
+}
+const oppAction = ref<ActionEvent | null>(null)
+const oppActionToast = ref(false)
+let oppActionTimer: ReturnType<typeof setTimeout> | null = null
+onAction((a) => {
+  const s = state.value
+  if (!s?.hand || a.hand_id !== s.hand.id) return
+  if (s.yourSeat === null || a.seat === s.yourSeat) return
+  oppAction.value = a
+  // フォールドは直後に結果バナーが出るため吹き出しは省略
+  if (a.type === 'fold') return
+  oppActionToast.value = true
+  if (oppActionTimer) clearTimeout(oppActionTimer)
+  oppActionTimer = setTimeout(() => (oppActionToast.value = false), 2600)
+})
+onUnmounted(() => {
+  if (oppActionTimer) clearTimeout(oppActionTimer)
+})
+
+// 吹き出しの本文。ベット/レイズ/オールインは「合計ベット額」で表示する
+// （イベント直後は一瞬旧額になり得るが、状態リロード(約0.1秒)で確定額に揃う）
+const oppActionText = computed(() => {
+  const a = oppAction.value
+  const h = hand.value
+  if (!a || !h) return null
+  const label = ACTION_LABEL[a.type]
+  let amount: number | null = null
+  if (a.type === 'call') amount = a.amount
+  if (a.type === 'bet' || a.type === 'raise' || a.type === 'allin') {
+    amount =
+      h.id === a.hand_id && h.street === a.street
+        ? (oppSeatState.value?.streetCommitted ?? a.amount)
+        : a.amount
+  }
+  return amount ? `${label} ${formatStack(amount)}` : label
+})
+
+// ベットピルに添える実況ラベル（同ハンド・同ストリートの間だけ残す）
+const oppPillLabel = computed(() => {
+  const a = oppAction.value
+  const h = hand.value
+  if (!a || !h || h.id !== a.hand_id || h.street !== a.street) return null
+  if (a.type === 'bet' || a.type === 'raise' || a.type === 'allin' || a.type === 'call') {
+    return ACTION_LABEL[a.type]
+  }
+  return null
+})
+
 // 表示用ポット: 現ストリートの未確定ベット（ピルで表示中）はポットに含めない
 const displayPot = computed(() => {
   const h = hand.value
@@ -110,6 +171,23 @@ const timePct = computed(() => {
   const total = room.value?.config.actionTimeoutSeconds ?? 30
   return Math.min(100, (timeLeft.value / total) * 100)
 })
+
+// ---- スタック表示の単位切替（チップ ⇔ BB・小数第1位） ----
+// どちらかのスタックをタップすると両席まとめて切り替わる。設定は保持。
+const stackInBB = ref(false)
+onMounted(() => {
+  stackInBB.value = localStorage.getItem('stackUnit') === 'bb'
+})
+watch(stackInBB, (v) => localStorage.setItem('stackUnit', v ? 'bb' : 'chips'))
+function toggleStackUnit() {
+  stackInBB.value = !stackInBB.value
+}
+// 現ハンドの BB（ハンド外は現在レベルの BB）
+const bbSize = computed(() => hand.value?.bb ?? room.value?.currentLevel.bb ?? 0)
+function formatStack(n: number): string {
+  if (!stackInBB.value || bbSize.value <= 0) return formatChips(n)
+  return `${(n / bbSize.value).toFixed(1)} BB`
+}
 
 // ブラインドレベルアップまで
 const blindCountdown = computed(() => {
@@ -188,10 +266,9 @@ const canStart = computed(
   () =>
     room.value?.status === 'waiting' &&
     state.value?.players.length === 2 &&
-    room.value.config &&
-    me.value &&
-    // 作成者判定は seat 0（作成時に seat0 を割当）で近似
-    yourSeat.value === 0,
+    // 両者揃っていれば、着席しているどちらの席からでも開始できる
+    // （匿名IDの喪失で作成者席が幽霊化しても対局不能にならない）
+    yourSeat.value !== null,
 )
 
 // 二重送信ガード付きアクション
@@ -277,7 +354,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
       <div class="card-panel gate">
         <h2>この部屋に参加</h2>
         <label for="join-name">表示名</label>
-        <input id="join-name" v-model="displayName" class="input" placeholder="例: たくや" maxlength="20" />
+        <input id="join-name" v-model="displayName" class="input" placeholder="例: エースハンター" maxlength="20" />
         <button class="btn btn--primary full" :disabled="joining" @click="doJoin">参加する</button>
       </div>
     </div>
@@ -316,6 +393,12 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           class="seat seat--opp"
           :class="{ folded: oppSeatState?.folded, active: isOppTurn }"
         >
+          <!-- 相手アクションの吹き出し -->
+          <transition name="bubble">
+            <div v-if="oppActionToast && oppActionText" class="action-bubble">
+              {{ oppActionText }}
+            </div>
+          </transition>
           <div class="plaque">
             <span class="avatar" :class="{ 'avatar--think': isOppTurn }">
               {{ (opponent?.displayName ?? '?').slice(0, 1) }}
@@ -323,9 +406,13 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
             <span class="plaque__name">
               {{ opponent?.displayName ?? '（空席）' }}
               <span v-if="isButton(oppSeat)" class="dealer">D</span>
-              <span v-if="oppSeatState?.allin" class="allin-tag">オールイン</span>
             </span>
-            <span class="plaque__stack money">{{ formatChips(oppStackDisplay) }}</span>
+            <button
+              type="button"
+              class="plaque__stack money stack-toggle"
+              aria-label="スタック表示の単位を切り替え"
+              @click="toggleStackUnit"
+            >{{ formatStack(oppStackDisplay) }}</button>
           </div>
           <TransitionGroup name="deal" tag="div" class="hole hole--opp">
             <PlayingCard
@@ -337,15 +424,18 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           </TransitionGroup>
           <div v-if="!hand.result && (oppSeatState?.streetCommitted ?? 0) > 0" class="betpill">
             <span class="betpill__coin" />
-            <span class="money">{{ formatChips(oppSeatState!.streetCommitted) }}</span>
+            <span v-if="oppPillLabel" class="betpill__act">{{ oppPillLabel }}</span>
+            <span class="money">{{ formatStack(oppSeatState!.streetCommitted) }}</span>
           </div>
+          <!-- オールインマーカー -->
+          <div v-if="oppSeatState?.allin" class="allin-marker">ALL IN</div>
         </section>
 
         <!-- ボード＆ポット -->
         <section class="board-area">
           <div class="pot">
             <span class="pot__label">ポット</span>
-            <span class="pot__value money">{{ formatChips(displayPot) }}</span>
+            <span class="pot__value money">{{ formatStack(displayPot) }}</span>
           </div>
           <TransitionGroup name="reveal" tag="div" class="board">
             <PlayingCard v-for="c in hand.board.slice(0, shownBoardCount)" :key="`b-${c}`" :card="c" />
@@ -363,14 +453,14 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
             <div v-if="turnFlash && !hand.result" class="turn-flash">あなたの番です</div>
           </transition>
 
-          <!-- 結果バナー -->
-          <transition name="pop">
+          <!-- 結果バナー（ボードを隠さないよう、ボード下の帯に表示） -->
+          <transition name="result-pop">
             <div v-if="hand.result && resultVisible" class="result">
               <template v-if="hand.result.reason === 'fold'">
                 <div class="result__title">
                   {{ hand.result.winners[0] === yourSeat ? 'あなたがポット獲得' : `${opponent?.displayName} がポット獲得` }}
                 </div>
-                <div class="result__sub">相手フォールド ・ <span class="money">{{ formatChips(hand.result.potWon) }}</span></div>
+                <div class="result__sub">相手フォールド ・ <span class="money">{{ formatStack(hand.result.potWon) }}</span></div>
               </template>
               <template v-else>
                 <div class="result__title">
@@ -391,7 +481,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
         <section class="seat seat--me" :class="{ folded: mySeatState?.folded, active: isMyTurn }">
           <div v-if="!hand.result && (mySeatState?.streetCommitted ?? 0) > 0" class="betpill">
             <span class="betpill__coin" />
-            <span class="money">{{ formatChips(mySeatState!.streetCommitted) }}</span>
+            <span class="money">{{ formatStack(mySeatState!.streetCommitted) }}</span>
           </div>
           <TransitionGroup name="deal" tag="div" class="hole hole--mine">
             <PlayingCard
@@ -405,11 +495,25 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
             <span class="plaque__name">
               {{ me?.displayName }}
               <span v-if="isButton(yourSeat)" class="dealer">D</span>
-              <span v-if="mySeatState?.allin" class="allin-tag">オールイン</span>
             </span>
-            <span class="plaque__stack money">{{ formatChips(myStackDisplay) }}</span>
+            <button
+              type="button"
+              class="plaque__stack money stack-toggle"
+              aria-label="スタック表示の単位を切り替え"
+              @click="toggleStackUnit"
+            >{{ formatStack(myStackDisplay) }}</button>
           </div>
+          <!-- オールインマーカー -->
+          <div v-if="mySeatState?.allin" class="allin-marker">ALL IN</div>
         </section>
+
+        <!-- 絵文字リアクション（相手とのコミュニケーション） -->
+        <EmojiReactions
+          v-if="room.status !== 'finished' && opponent"
+          ref="reactionsRef"
+          :self-name="me?.displayName ?? 'あなた'"
+          @send="sendEmoji"
+        />
 
         <!-- 対局終了オーバーレイ（最終ハンドのランアウト演出が終わってから表示） -->
         <div v-if="room.status === 'finished' && (!hand.result || resultVisible)" class="finished">
@@ -439,6 +543,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           :current-bet="hand.currentBet"
           :bb="hand.bb"
           :chip-unit="room.config.chipUnit"
+          :bb-mode="stackInBB"
           :pending="acting"
           @act="doAct"
         />
@@ -634,11 +739,44 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 
 /* ---- 席 ---- */
 .seat {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.32rem;
   transition: opacity 0.25s;
+}
+
+/* ---- 相手アクションの実況 ---- */
+.action-bubble {
+  position: absolute;
+  top: -0.45rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  background: var(--amber);
+  color: #2b1c04;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  padding: 0.28rem 0.75rem;
+  border-radius: 1rem;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgba(240, 178, 79, 0.4);
+  pointer-events: none;
+}
+.bubble-enter-active {
+  transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.bubble-leave-active {
+  transition: opacity 0.3s ease;
+}
+.bubble-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px) scale(0.85);
+}
+.bubble-leave-to {
+  opacity: 0;
 }
 .seat.folded {
   opacity: 0.4;
@@ -712,6 +850,18 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   color: var(--text);
   white-space: nowrap;
 }
+/* スタックはタップで チップ ⇔ BB 表示を切り替えられる */
+.stack-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.stack-toggle:active {
+  opacity: 0.65;
+}
 .dealer {
   background: #f5f6f7;
   color: #14171c;
@@ -726,16 +876,43 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   flex-shrink: 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
-.allin-tag {
-  background: var(--danger-soft);
-  border: 1px solid rgba(242, 86, 77, 0.5);
-  color: #ff8a80;
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  border-radius: 0.4rem;
-  padding: 0.1rem 0.32rem;
-  flex-shrink: 0;
+/* ---- オールインマーカー（テーブルに置く札風） ---- */
+.allin-marker {
+  position: absolute;
+  left: 50%;
+  z-index: 6;
+  transform: translateX(-50%) rotate(-7deg);
+  background: linear-gradient(180deg, rgba(96, 18, 14, 0.94), rgba(58, 10, 8, 0.94));
+  border: 2px solid rgba(242, 86, 77, 0.85);
+  color: #ffb3ac;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 0.82rem;
+  letter-spacing: 0.16em;
+  text-indent: 0.16em;
+  padding: 0.28rem 0.9rem;
+  border-radius: 0.55rem;
+  white-space: nowrap;
+  box-shadow: 0 6px 22px rgba(242, 86, 77, 0.35), inset 0 0 12px rgba(242, 86, 77, 0.22);
+  pointer-events: none;
+  animation: stamp 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+/* 相手席はプレート下（カードに少し掛かる位置）、自席はカード下部に重ねる */
+.seat--opp .allin-marker {
+  top: 2.55rem;
+}
+.seat--me .allin-marker {
+  bottom: 2.9rem;
+}
+@keyframes stamp {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) rotate(-7deg) scale(1.7);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) rotate(-7deg) scale(1);
+  }
 }
 
 .hole {
@@ -770,6 +947,12 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #ffd88f, var(--amber) 60%, #a06f22 100%);
   box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35);
+}
+.betpill__act {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--amber);
 }
 
 /* ---- ボード ---- */
@@ -814,22 +997,24 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   opacity: 0.14;
 }
 
-/* ---- 結果バナー ---- */
+/* ---- 結果バナー ----
+   ボード/相手のカードを確認しながら読めるよう、ボード領域の直下に出す
+   （中央に被せない）。ピルは結果表示時に消えるため、この帯は空いている */
 .result {
   position: absolute;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  top: calc(100% + 0.45rem);
+  transform: translateX(-50%);
   z-index: 5;
-  min-width: 240px;
-  max-width: 92%;
+  min-width: 230px;
+  max-width: 94%;
   text-align: center;
   background: var(--overlay);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--border-strong);
   border-radius: 1.1rem;
-  padding: 0.85rem 1.2rem;
+  padding: 0.6rem 1.1rem;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
 }
 .result__title {
@@ -880,6 +1065,20 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   transform: translate(-50%, -50%) scale(0.8);
 }
 .pop-leave-to {
+  opacity: 0;
+}
+/* 結果バナー用（基準 transform が translateX のみのため専用に定義） */
+.result-pop-enter-active {
+  transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.result-pop-leave-active {
+  transition: opacity 0.2s ease;
+}
+.result-pop-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px) scale(0.9);
+}
+.result-pop-leave-to {
   opacity: 0;
 }
 
@@ -936,6 +1135,12 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   margin: 0.4rem -0.6rem 0;
   padding: 0.45rem 0.6rem calc(0.55rem + var(--safe-bottom));
   background: linear-gradient(180deg, rgba(7, 11, 9, 0), rgba(7, 11, 9, 0.97) 12%, var(--bg) 40%);
+  /* 手番/待機でドックの高さが変わってもテーブル（カード位置）が上下しないよう、
+     最大時（タイマー＋サイザー＋アクション行）の高さを常に確保して下寄せする */
+  min-height: calc(12rem + var(--safe-bottom));
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }
 .timer {
   position: relative;
@@ -1061,6 +1266,9 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   .reveal-leave-active,
   .reveal-move,
   .pop-enter-active,
+  .result-pop-enter-active,
+  .bubble-enter-active,
+  .allin-marker,
   .avatar--think,
   .waiting-turn__avatar,
   .thinking-dots span {

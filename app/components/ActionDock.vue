@@ -10,6 +10,8 @@ const props = defineProps<{
   bb: number
   /** 最小チップ単位（1 = 制限なし）。ベット額はこの倍数に切り上げる */
   chipUnit: number
+  /** BB 表示モード（スタック表示の単位と連動。入力・表示を BB に切替） */
+  bbMode?: boolean
   /** アクション送信中（二重送信防止） */
   pending?: boolean
 }>()
@@ -20,21 +22,50 @@ const emit = defineEmits<{
 
 const isRaise = computed(() => props.currentBet > 0)
 
-// ---- ベット額（数値入力） ----
-// 入力中の空文字を許すため文字列で保持し、確定時にクランプする
-const raw = ref(String(props.legal.minRaiseTo))
+// ---- 表示単位（チップ ⇔ BB・小数第1位） ----
+const inBB = computed(() => !!props.bbMode && props.bb > 0)
+/** チップ額 → 入力欄の文字列（現在の単位） */
+function chipsToRaw(n: number): string {
+  return inBB.value ? (n / props.bb).toFixed(1) : String(n)
+}
+/** チップ額 → 表示文字列（単位サフィックスなし） */
+function fmt(n: number): string {
+  return inBB.value ? (n / props.bb).toFixed(1) : formatChips(n)
+}
+/** チップ額 → 表示文字列（BB 時はサフィックス付き） */
+function fmtAmt(n: number): string {
+  return inBB.value ? `${(n / props.bb).toFixed(1)} BB` : formatChips(n)
+}
 
-const amount = computed<number | null>(() => {
-  if (!/^\d+$/.test(raw.value)) return null
-  return Number(raw.value)
-})
+// ---- ベット額 ----
+// 権威値は常にチップ額（chips）。raw は表示単位での入力文字列ビュー。
+// BB 入力は 0.1BB 刻みで表現できない額があるため、チップ額を正として保持する。
+const raw = ref('')
+const chips = ref<number | null>(null)
+function setChips(n: number) {
+  chips.value = n
+  raw.value = chipsToRaw(n)
+}
+
 // 最小チップ単位への切り上げ（1 なら無変換）
 function snapUp(n: number): number {
   return props.chipUnit > 1 ? Math.ceil(n / props.chipUnit) * props.chipUnit : n
 }
 
+/** 入力文字列を現在の単位で解釈してチップ額へ（不正なら null） */
+function parseRaw(v: string): number | null {
+  if (inBB.value) {
+    if (!/^\d+(\.\d+)?$/.test(v)) return null
+    // BB 入力はチップ換算後、最小チップ単位へ切り上げ
+    return snapUp(Math.round(Number(v) * props.bb))
+  }
+  return /^\d+$/.test(v) ? Number(v) : null
+}
+
+setChips(props.legal.minRaiseTo)
+
 const isValid = computed(() => {
-  const a = amount.value
+  const a = chips.value
   if (a === null) return false
   if (a < props.legal.minRaiseTo || a > props.legal.maxRaiseTo) return false
   // オールイン（上限額）以外は最小チップ単位の倍数のみ
@@ -46,15 +77,29 @@ const isValid = computed(() => {
 watch(
   () => props.legal.minRaiseTo,
   (min) => {
-    raw.value = String(min)
+    setChips(min)
   },
 )
 
+// 表示単位の切替時は、保持しているチップ額を新しい単位で表示し直す
+watch(inBB, () => {
+  raw.value = chipsToRaw(chips.value ?? props.legal.minRaiseTo)
+})
+
 function onInput(e: Event) {
   const el = e.target as HTMLInputElement
-  const digits = el.value.replace(/[^\d]/g, '')
-  raw.value = digits
-  el.value = digits
+  let v = el.value
+  if (inBB.value) {
+    // 数字と小数点1桁のみ許可
+    const cleaned = v.replace(/[^\d.]/g, '')
+    const [head = '', ...rest] = cleaned.split('.')
+    v = rest.length ? `${head}.${rest.join('').slice(0, 1)}` : head
+  } else {
+    v = v.replace(/[^\d]/g, '')
+  }
+  raw.value = v
+  el.value = v
+  chips.value = parseRaw(v)
 }
 
 function clamp(n: number): number {
@@ -62,16 +107,14 @@ function clamp(n: number): number {
 }
 
 function commitInput() {
-  raw.value = String(
-    amount.value === null ? props.legal.minRaiseTo : clamp(snapUp(amount.value)),
-  )
+  setChips(chips.value === null ? props.legal.minRaiseTo : clamp(snapUp(chips.value)))
 }
 
 // ---- ± ステッパー（BB 単位、長押しで連続増減） ----
 function step(dir: 1 | -1) {
   // 端数入力中でも単位に整えてから増減する
-  const base = snapUp(amount.value ?? props.legal.minRaiseTo)
-  raw.value = String(clamp(base + dir * props.bb))
+  const base = snapUp(chips.value ?? props.legal.minRaiseTo)
+  setChips(clamp(base + dir * props.bb))
 }
 
 let holdTimer: ReturnType<typeof setTimeout> | null = null
@@ -94,8 +137,8 @@ function holdEnd() {
 }
 onUnmounted(holdEnd)
 
-const atMin = computed(() => (amount.value ?? props.legal.minRaiseTo) <= props.legal.minRaiseTo)
-const atMax = computed(() => (amount.value ?? props.legal.minRaiseTo) >= props.legal.maxRaiseTo)
+const atMin = computed(() => (chips.value ?? props.legal.minRaiseTo) <= props.legal.minRaiseTo)
+const atMax = computed(() => (chips.value ?? props.legal.minRaiseTo) >= props.legal.maxRaiseTo)
 
 // ---- ポット％ショートカット ----
 // レイズ時の「X% ポット」= コール後ポットの X% を上乗せした合計ベット額
@@ -122,19 +165,19 @@ const presets = computed(() =>
     const target = potTarget(p.pct)
     const reachable =
       target >= props.legal.minRaiseTo && target <= props.legal.maxRaiseTo
-    return { ...p, target, reachable, active: amount.value === target }
+    return { ...p, target, reachable, active: chips.value === target }
   }),
 )
 
-const allinActive = computed(() => amount.value === props.legal.maxRaiseTo)
+const allinActive = computed(() => chips.value === props.legal.maxRaiseTo)
 
 function applyPreset(target: number) {
-  raw.value = String(target)
+  setChips(target)
 }
 
 function submitRaise() {
-  if (!isValid.value || amount.value === null) return
-  emit('act', isRaise.value ? 'raise' : 'bet', amount.value)
+  if (!isValid.value || chips.value === null) return
+  emit('act', isRaise.value ? 'raise' : 'bet', chips.value)
 }
 </script>
 
@@ -173,11 +216,12 @@ function submitRaise() {
         >−</button>
 
         <div class="amount-box" :class="{ 'amount-box--invalid': !isValid }">
+          <span v-if="inBB" class="amount-unit">BB</span>
           <input
             class="amount-input money"
             type="text"
-            inputmode="numeric"
-            pattern="[0-9]*"
+            :inputmode="inBB ? 'decimal' : 'numeric'"
+            :pattern="inBB ? '[0-9.]*' : '[0-9]*'"
             autocomplete="off"
             enterkeyhint="done"
             aria-label="ベット額"
@@ -187,7 +231,7 @@ function submitRaise() {
             @keyup.enter="($event.target as HTMLInputElement).blur()"
           />
           <div class="amount-range money">
-            {{ formatChips(legal.minRaiseTo) }} 〜 {{ formatChips(legal.maxRaiseTo) }}<template v-if="chipUnit > 1"> ・ {{ formatChips(chipUnit) }}刻み</template>
+            {{ fmt(legal.minRaiseTo) }} 〜 {{ fmtAmt(legal.maxRaiseTo) }}<template v-if="chipUnit > 1"> ・ {{ fmt(chipUnit) }}刻み</template>
           </div>
         </div>
 
@@ -213,7 +257,7 @@ function submitRaise() {
       </button>
       <button v-if="legal.canCall" class="act act--call" :disabled="pending" @click="emit('act', 'call')">
         コール
-        <span class="act__amt money">{{ formatChips(legal.callAmount) }}</span>
+        <span class="act__amt money">{{ fmtAmt(legal.callAmount) }}</span>
       </button>
 
       <button
@@ -223,7 +267,7 @@ function submitRaise() {
         @click="submitRaise"
       >
         {{ isRaise ? 'レイズ' : 'ベット' }}
-        <span class="act__amt money">{{ amount === null ? '—' : formatChips(amount) }}</span>
+        <span class="act__amt money">{{ chips === null ? '—' : fmtAmt(chips) }}</span>
       </button>
     </div>
   </div>
@@ -306,6 +350,7 @@ function submitRaise() {
   filter: brightness(1.2);
 }
 .amount-box {
+  position: relative;
   flex: 1;
   min-width: 0;
   background: rgba(0, 0, 0, 0.4);
@@ -314,6 +359,17 @@ function submitRaise() {
   padding: 0.22rem 0.5rem 0.28rem;
   text-align: center;
   transition: border-color 0.15s, box-shadow 0.15s;
+}
+/* BB 表示モードの単位バッジ */
+.amount-unit {
+  position: absolute;
+  right: 0.6rem;
+  top: 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  pointer-events: none;
 }
 .amount-box:focus-within {
   border-color: var(--accent);

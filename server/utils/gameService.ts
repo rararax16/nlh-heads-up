@@ -140,14 +140,18 @@ export async function joinRoom(
 // ------------------------------------------------------------------
 export async function startGame(db: DB, input: { code: string; userId: string }): Promise<void> {
   const room = await getRoomByCode(db, input.code)
-  if (room.created_by !== input.userId) throw new GameError('開始できるのは部屋の作成者のみです')
   if (room.status !== 'waiting') throw new GameError('すでに開始しています')
 
   const { data: players } = await db
     .from('room_players')
-    .select('seat')
+    .select('seat, user_id')
     .eq('room_id', room.id)
   if ((players?.length ?? 0) < 2) throw new GameError('対戦相手の入室を待っています')
+  // 両者着席していれば、どちらの席からでも開始できる。
+  // （作成者限定にすると、匿名IDの喪失で作成者席が幽霊化した部屋を誰も開始できなくなる）
+  if (!players!.some((p) => p.user_id === input.userId)) {
+    throw new GameError('開始できるのはこの部屋の参加者のみです')
+  }
 
   const button = Math.random() < 0.5 ? 0 : 1
   await db
