@@ -110,11 +110,13 @@ function commitInput() {
   setChips(chips.value === null ? props.legal.minRaiseTo : clamp(snapUp(chips.value)))
 }
 
-// ---- ± ステッパー（BB 単位、長押しで連続増減） ----
+// ---- ± ステッパー（最小チップ単位ずつ、長押しで連続増減） ----
+// 最小チップ単位が設定されていればその単位で、なし(1)なら BB 単位で増減する
+const stepSize = computed(() => (props.chipUnit > 1 ? props.chipUnit : props.bb))
 function step(dir: 1 | -1) {
   // 端数入力中でも単位に整えてから増減する
   const base = snapUp(chips.value ?? props.legal.minRaiseTo)
-  setChips(clamp(base + dir * props.bb))
+  setChips(clamp(base + dir * stepSize.value))
 }
 
 let holdTimer: ReturnType<typeof setTimeout> | null = null
