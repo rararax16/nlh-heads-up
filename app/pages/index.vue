@@ -112,7 +112,7 @@ function extractError(e: unknown): string {
     <div class="stack">
       <div class="card-panel">
         <label for="dn">あなたの表示名</label>
-        <input id="dn" v-model="displayName" class="input" placeholder="例: たくや" maxlength="20" />
+        <input id="dn" v-model="displayName" class="input" placeholder="例: エースハンター" maxlength="20" />
       </div>
 
       <p v-if="error" class="error">{{ error }}</p>
