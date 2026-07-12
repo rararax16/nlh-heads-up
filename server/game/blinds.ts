@@ -27,6 +27,23 @@ function roundBlind(v: number): number {
 }
 
 /**
+ * ブラインド構造を最小チップ単位に合わせる。
+ * bb/ante は単位の倍数へ丸め（最低 1 単位）。これによりベット/レイズの
+ * 合法額が常に単位の倍数になる。sb は bb/2（端数可・支払いは正確に行われる）。
+ */
+export function snapStructureToChipUnit(
+  structure: BlindLevel[],
+  chipUnit: number,
+): BlindLevel[] {
+  if (chipUnit <= 1) return structure
+  return structure.map((l) => {
+    const bb = Math.max(chipUnit, Math.round(l.bb / chipUnit) * chipUnit)
+    const ante = l.ante > 0 ? Math.max(chipUnit, Math.round(l.ante / chipUnit) * chipUnit) : 0
+    return { level: l.level, sb: Math.max(1, Math.round(bb / 2)), bb, ante }
+  })
+}
+
+/**
  * 経過時間からブラインドレベルを算出（タイムスタンプ方式・常駐タイマー不要）。
  * @param startedAt 対局開始時刻
  * @param intervalSeconds レベルアップ間隔（秒）

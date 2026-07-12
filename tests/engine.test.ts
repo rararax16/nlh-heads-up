@@ -159,3 +159,36 @@ describe('最小レイズのバリデーション', () => {
     expect(() => applyAction(h, 0, { type: 'raise', amount: 100 })).not.toThrow()
   })
 })
+
+describe('最小チップ単位（chipUnit）', () => {
+  const deck = ['As', 'Ks', '2d', '3c', 'Ah', 'Kh', 'Qh', 'Jd', 'Td']
+
+  it('単位の倍数でないレイズは拒否、倍数なら許可される', () => {
+    const h = deal(deck, { anteMode: 'none', ante: 0, sb: 50, bb: 100 })
+    // currentBet=100, minRaiseTo=200（unit=100 の倍数）。250 は範囲内だが端数
+    expect(() => applyAction(h, 0, { type: 'raise', amount: 250 }, 100)).toThrow(/単位/)
+    expect(() => applyAction(h, 0, { type: 'raise', amount: 300 }, 100)).not.toThrow()
+  })
+
+  it('オールインは単位の倍数でなくても許可される', () => {
+    const h = deal(deck, {
+      anteMode: 'none',
+      ante: 0,
+      sb: 50,
+      bb: 100,
+      players: players(1050, 2000),
+    })
+    const la = legalActions(h, 0, 100)
+    expect(la.maxRaiseTo).toBe(1050) // 端数のオールイン上限
+    expect(() => applyAction(h, 0, { type: 'raise', amount: 1050 }, 100)).not.toThrow()
+    expect(h.seats[0]!.allin).toBe(true)
+  })
+
+  it('legalActions の最小レイズ額が単位に切り上げられる', () => {
+    const h = deal(deck, { anteMode: 'none', ante: 0, sb: 15, bb: 30 })
+    // 素の minRaiseTo は 60 → unit=100 で 100 に切り上げ
+    expect(legalActions(h, 0, 100).minRaiseTo).toBe(100)
+    // unit 指定なしなら従来通り
+    expect(legalActions(h, 0).minRaiseTo).toBe(60)
+  })
+})

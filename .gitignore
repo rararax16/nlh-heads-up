@@ -29,3 +29,4 @@ supabase/.branches
 
 # Vercel
 .vercel
+.env*

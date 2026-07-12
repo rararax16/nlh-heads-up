@@ -17,6 +17,7 @@ export default defineEventHandler(async (event) => {
       actionTimeoutSeconds: numberOr(body?.actionTimeoutSeconds, 30),
       anteMode: body?.anteMode === 'none' ? 'none' : 'bb',
       startingBb: numberOr(body?.startingBb, 200),
+      chipUnit: numberOr(body?.chipUnit, 100),
     }),
   )
 })

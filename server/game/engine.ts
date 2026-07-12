@@ -156,8 +156,11 @@ export function startHand(input: StartHandInput): EngineHand {
   return hand
 }
 
-/** 現手番の席が取れる合法アクション */
-export function legalActions(hand: EngineHand, seat: number): LegalActions {
+/**
+ * 現手番の席が取れる合法アクション。
+ * chipUnit > 1 のとき、最小レイズ額は単位へ切り上げられる（オールイン上限は超えない）。
+ */
+export function legalActions(hand: EngineHand, seat: number, chipUnit = 1): LegalActions {
   const s = hand.seats[seat]!
   const opp = hand.seats[other(seat)]!
   const toCall = Math.max(0, hand.currentBet - s.streetCommitted)
@@ -172,6 +175,7 @@ export function legalActions(hand: EngineHand, seat: number): LegalActions {
     hand.blockReraiseSeat !== seat
 
   let minRaiseTo = hand.currentBet + hand.minRaise
+  if (chipUnit > 1) minRaiseTo = Math.ceil(minRaiseTo / chipUnit) * chipUnit
   if (minRaiseTo > maxRaiseTo) minRaiseTo = maxRaiseTo // ショートオールインのみ可
 
   return {
@@ -195,17 +199,19 @@ export interface AppliedAction {
 /**
  * アクションを適用。バリデーション → 状態遷移（必要ならストリート進行・決着）。
  * amount はベット/レイズ時の「合計ベット額(raiseTo)」。
+ * chipUnit > 1 のとき、ベット/レイズ額は単位の倍数のみ許可（オールインは端数可）。
  */
 export function applyAction(
   hand: EngineHand,
   seat: number,
   action: { type: 'fold' | 'check' | 'call' | 'bet' | 'raise'; amount?: number },
+  chipUnit = 1,
 ): AppliedAction {
   if (hand.toActSeat !== seat) throw new GameError('あなたの手番ではありません')
   const s = hand.seats[seat]!
   if (s.folded || s.allin) throw new GameError('アクションできない状態です')
 
-  const legal = legalActions(hand, seat)
+  const legal = legalActions(hand, seat, chipUnit)
   const street = hand.street
   let emitted: AppliedAction
 
@@ -237,6 +243,10 @@ export function applyAction(
         throw new GameError(
           `ベット額が不正です（${legal.minRaiseTo}〜${legal.maxRaiseTo}）`,
         )
+      }
+      // 最小チップ単位チェック（オールイン = maxRaiseTo は端数可）
+      if (chipUnit > 1 && raiseTo % chipUnit !== 0 && raiseTo !== legal.maxRaiseTo) {
+        throw new GameError(`ベット額は ${chipUnit} 単位で入力してください`)
       }
       const prevBet = hand.currentBet
       const raiseIncrement = raiseTo - prevBet

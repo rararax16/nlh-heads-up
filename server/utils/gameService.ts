@@ -12,7 +12,7 @@ import {
   type EngineHand,
 } from '../game/engine'
 import { GameError } from '../game/engine'
-import { currentLevel, defaultBlindStructure, nextLevelAt } from '../game/blinds'
+import { currentLevel, defaultBlindStructure, nextLevelAt, snapStructureToChipUnit } from '../game/blinds'
 import {
   fromDbHand,
   toDbHand,
@@ -39,6 +39,7 @@ export interface CreateRoomInput {
   anteMode?: 'none' | 'bb'
   startingBb?: number
   blindStructure?: BlindLevel[]
+  chipUnit?: number
 }
 
 function randomCode(len = 6): string {
@@ -52,8 +53,14 @@ function randomCode(len = 6): string {
 
 export async function createRoom(db: DB, input: CreateRoomInput): Promise<{ code: string; id: string }> {
   const initialStack = input.initialStack ?? 10000
-  const structure =
+  const rawStructure =
     input.blindStructure ?? defaultBlindStructure(input.startingBb ?? 200)
+  // 最小チップ単位は開始 BB を超えない範囲に制限し、ブラインド構造も単位へスナップ
+  const chipUnit = Math.max(
+    1,
+    Math.min(Math.floor(input.chipUnit ?? 100), rawStructure[0]?.bb ?? 1),
+  )
+  const structure = snapStructureToChipUnit(rawStructure, chipUnit)
 
   // 一意なコードを確保（衝突時リトライ）
   let code = randomCode()
@@ -76,6 +83,7 @@ export async function createRoom(db: DB, input: CreateRoomInput): Promise<{ code
       action_timeout_seconds: input.actionTimeoutSeconds ?? 30,
       ante_mode: input.anteMode ?? 'bb',
       blind_structure: structure,
+      chip_unit: chipUnit,
     })
     .select('id, code')
     .single()
@@ -235,7 +243,12 @@ export async function applyPlayerAction(
   if (seat === null) throw new GameError('この部屋の参加者ではありません')
   if (engine.result) throw new GameError('このハンドは既に終了しています')
 
-  const emitted = applyAction(engine, seat, { type: input.type, amount: input.amount })
+  const emitted = applyAction(
+    engine,
+    seat,
+    { type: input.type, amount: input.amount },
+    room.chip_unit ?? 1,
+  )
 
   await persistHand(db, {
     roomId: room.id,
@@ -324,6 +337,7 @@ export async function buildRoomView(
     actionTimeoutSeconds: room.action_timeout_seconds,
     anteMode: room.ante_mode,
     blindStructure: structure,
+    chipUnit: room.chip_unit ?? 1, // マイグレーション前の部屋は制限なし
   }
   const level = currentLevel(room.started_at, room.blind_interval_seconds, structure)
 
@@ -357,7 +371,7 @@ export async function buildRoomView(
       if (!row.result && row.to_act_seat !== null && row.to_act_seat === yourSeat) {
         // legalActions はホールカード不要 → 空デッキで復元して算出
         const engine = fromDbHand(row, [], {})
-        legal = engineLegalActions(engine, yourSeat)
+        legal = engineLegalActions(engine, yourSeat, room.chip_unit ?? 1)
       }
     }
   }

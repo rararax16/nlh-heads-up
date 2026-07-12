@@ -8,6 +8,8 @@ const props = defineProps<{
   /** 現ストリートの相手ベット額（合計ベット基準） */
   currentBet: number
   bb: number
+  /** 最小チップ単位（1 = 制限なし）。ベット額はこの倍数に切り上げる */
+  chipUnit: number
   /** アクション送信中（二重送信防止） */
   pending?: boolean
 }>()
@@ -26,12 +28,18 @@ const amount = computed<number | null>(() => {
   if (!/^\d+$/.test(raw.value)) return null
   return Number(raw.value)
 })
-const isValid = computed(
-  () =>
-    amount.value !== null &&
-    amount.value >= props.legal.minRaiseTo &&
-    amount.value <= props.legal.maxRaiseTo,
-)
+// 最小チップ単位への切り上げ（1 なら無変換）
+function snapUp(n: number): number {
+  return props.chipUnit > 1 ? Math.ceil(n / props.chipUnit) * props.chipUnit : n
+}
+
+const isValid = computed(() => {
+  const a = amount.value
+  if (a === null) return false
+  if (a < props.legal.minRaiseTo || a > props.legal.maxRaiseTo) return false
+  // オールイン（上限額）以外は最小チップ単位の倍数のみ
+  return a % props.chipUnit === 0 || a === props.legal.maxRaiseTo
+})
 
 // 別ストリート・別ハンドで最小レイズ額が変わったら初期値へ戻す
 // （オブジェクト再取得ではなく値の変化のみに反応し、入力中の値を壊さない）
@@ -54,12 +62,15 @@ function clamp(n: number): number {
 }
 
 function commitInput() {
-  raw.value = String(amount.value === null ? props.legal.minRaiseTo : clamp(amount.value))
+  raw.value = String(
+    amount.value === null ? props.legal.minRaiseTo : clamp(snapUp(amount.value)),
+  )
 }
 
 // ---- ± ステッパー（BB 単位、長押しで連続増減） ----
 function step(dir: 1 | -1) {
-  const base = amount.value ?? props.legal.minRaiseTo
+  // 端数入力中でも単位に整えてから増減する
+  const base = snapUp(amount.value ?? props.legal.minRaiseTo)
   raw.value = String(clamp(base + dir * props.bb))
 }
 
@@ -99,11 +110,11 @@ const PRESETS = [
 ] as const
 
 function potTarget(pct: number): number {
-  if (isRaise.value) {
-    const toCall = props.legal.callAmount
-    return Math.round(props.currentBet + pct * (props.pot + toCall))
-  }
-  return Math.round(props.pot * pct)
+  const target = isRaise.value
+    ? props.currentBet + pct * (props.pot + props.legal.callAmount)
+    : props.pot * pct
+  // 最小チップ単位に切り上げ（例: 33% = 1,012 → 1,100）
+  return snapUp(Math.round(target))
 }
 
 const presets = computed(() =>
@@ -176,7 +187,7 @@ function submitRaise() {
             @keyup.enter="($event.target as HTMLInputElement).blur()"
           />
           <div class="amount-range money">
-            {{ formatChips(legal.minRaiseTo) }} 〜 {{ formatChips(legal.maxRaiseTo) }}
+            {{ formatChips(legal.minRaiseTo) }} 〜 {{ formatChips(legal.maxRaiseTo) }}<template v-if="chipUnit > 1"> ・ {{ formatChips(chipUnit) }}刻み</template>
           </div>
         </div>
 

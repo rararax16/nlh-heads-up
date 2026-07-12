@@ -5,10 +5,17 @@ const route = useRoute()
 const router = useRouter()
 const code = String(route.params.code).toUpperCase()
 const displayName = useDisplayName()
+const activeRoom = useActiveRoom()
 
 const { state, error, loading, now, join, start, act } = useRoom(code)
 
 const joining = ref(false)
+
+// 着席中はこの部屋を「戻り先」として保存（対局終了で解除）
+watch(state, (s) => {
+  if (!s || s.yourSeat === null) return
+  activeRoom.value = s.room.status === 'finished' ? null : s.room.code
+})
 
 // 自分がまだ着席していなければ自動入室（表示名がある場合）
 watch(
@@ -42,6 +49,28 @@ const isMyTurn = computed(
 const isOppTurn = computed(
   () => !!hand.value && !hand.value.result && hand.value.toActSeat === oppSeat.value,
 )
+
+// 手番が自分に回ってきた瞬間の通知（フラッシュ表示＋バイブレーション）
+const turnFlash = ref(false)
+let turnFlashTimer: ReturnType<typeof setTimeout> | null = null
+watch(isMyTurn, (mine, was) => {
+  if (!mine || was) return
+  turnFlash.value = true
+  if ('vibrate' in navigator) navigator.vibrate(60)
+  if (turnFlashTimer) clearTimeout(turnFlashTimer)
+  turnFlashTimer = setTimeout(() => (turnFlash.value = false), 1400)
+})
+onUnmounted(() => {
+  if (turnFlashTimer) clearTimeout(turnFlashTimer)
+})
+
+// 表示用ポット: 現ストリートの未確定ベット（ピルで表示中）はポットに含めない
+const displayPot = computed(() => {
+  const h = hand.value
+  if (!h) return 0
+  if (h.result) return h.pot
+  return h.pot - (h.seats[0]?.streetCommitted ?? 0) - (h.seats[1]?.streetCommitted ?? 0)
+})
 
 // ショーダウンで公開された相手のカード
 const opponentCards = computed<Card[] | null>(() => {
@@ -199,6 +228,28 @@ async function doJoin() {
 function leave() {
   router.push('/')
 }
+
+// ---- 誤離脱ガード（スマホのブラウザバック・スワイプバック対策） ----
+const inPlay = computed(
+  () => room.value?.status === 'playing' && yourSeat.value !== null,
+)
+
+// SPA 内ナビゲーション（ブラウザバック・←ボタン共通）を確認ダイアログで保護
+onBeforeRouteLeave(() => {
+  if (!inPlay.value) return true
+  return window.confirm(
+    '対局中です。テーブルを離れますか？\n（ロビーの「対局に戻る」からいつでも戻れます）',
+  )
+})
+
+// リロード・タブを閉じる操作への警告（ブラウザ標準ダイアログ・ベストエフォート）
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (!inPlay.value) return
+  e.preventDefault()
+  e.returnValue = ''
+}
+onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
+onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 </script>
 
 <template>
@@ -284,7 +335,7 @@ function leave() {
               :face-down="!opponentCards"
             />
           </TransitionGroup>
-          <div v-if="(oppSeatState?.streetCommitted ?? 0) > 0" class="betpill">
+          <div v-if="!hand.result && (oppSeatState?.streetCommitted ?? 0) > 0" class="betpill">
             <span class="betpill__coin" />
             <span class="money">{{ formatChips(oppSeatState!.streetCommitted) }}</span>
           </div>
@@ -294,7 +345,7 @@ function leave() {
         <section class="board-area">
           <div class="pot">
             <span class="pot__label">ポット</span>
-            <span class="pot__value money">{{ formatChips(hand.pot) }}</span>
+            <span class="pot__value money">{{ formatChips(displayPot) }}</span>
           </div>
           <TransitionGroup name="reveal" tag="div" class="board">
             <PlayingCard v-for="c in hand.board.slice(0, shownBoardCount)" :key="`b-${c}`" :card="c" />
@@ -306,6 +357,11 @@ function leave() {
               class="ghost"
             />
           </TransitionGroup>
+
+          <!-- 手番が回ってきた瞬間のフラッシュ -->
+          <transition name="pop">
+            <div v-if="turnFlash && !hand.result" class="turn-flash">あなたの番です</div>
+          </transition>
 
           <!-- 結果バナー -->
           <transition name="pop">
@@ -333,7 +389,7 @@ function leave() {
 
         <!-- 自分席 -->
         <section class="seat seat--me" :class="{ folded: mySeatState?.folded, active: isMyTurn }">
-          <div v-if="(mySeatState?.streetCommitted ?? 0) > 0" class="betpill">
+          <div v-if="!hand.result && (mySeatState?.streetCommitted ?? 0) > 0" class="betpill">
             <span class="betpill__coin" />
             <span class="money">{{ formatChips(mySeatState!.streetCommitted) }}</span>
           </div>
@@ -382,11 +438,17 @@ function leave() {
           :pot="hand.pot"
           :current-bet="hand.currentBet"
           :bb="hand.bb"
+          :chip-unit="room.config.chipUnit"
           :pending="acting"
           @act="doAct"
         />
-        <div v-else-if="!hand.result" class="waiting-turn">
-          <span class="pulse-dot" /> {{ opponent?.displayName ?? '相手' }} の手番です…
+        <div v-else-if="!hand.result" class="waiting-turn waiting-turn--opp">
+          <span class="waiting-turn__avatar" aria-hidden="true">
+            {{ (opponent?.displayName ?? '?').slice(0, 1) }}
+          </span>
+          <span class="waiting-turn__text">
+            <b>{{ opponent?.displayName ?? '相手' }}</b> が考え中<span class="thinking-dots"><span>・</span><span>・</span><span>・</span></span>
+          </span>
         </div>
         <div v-else class="waiting-turn waiting-turn--result">
           {{ resultVisible ? '次のハンドを準備中…' : 'ショーダウン' }}
@@ -598,6 +660,18 @@ function leave() {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px rgba(43, 196, 126, 0.35), 0 0 20px rgba(43, 196, 126, 0.3);
 }
+/* 手番の色分け: 自分 = グリーン / 相手 = アンバー（どちらの番か一目で分かるように） */
+.seat--opp.active .plaque {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px rgba(240, 178, 79, 0.35), 0 0 20px rgba(240, 178, 79, 0.28);
+}
+.seat--opp .avatar--think {
+  animation-name: thinkAmber;
+}
+@keyframes thinkAmber {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(240, 178, 79, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(240, 178, 79, 0); }
+}
 .avatar {
   width: 1.9rem;
   height: 1.9rem;
@@ -776,6 +850,25 @@ function leave() {
   color: var(--muted);
   margin-top: 0.4rem;
 }
+/* ---- 手番フラッシュ ---- */
+.turn-flash {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  background: var(--accent);
+  color: #052a1a;
+  font-weight: 800;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  padding: 0.55rem 1.3rem;
+  border-radius: 2rem;
+  white-space: nowrap;
+  box-shadow: 0 8px 30px rgba(43, 196, 126, 0.45);
+  pointer-events: none;
+}
+
 .pop-enter-active {
   transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
 }
@@ -862,7 +955,7 @@ function leave() {
   background: var(--danger);
 }
 .timer--opp .timer__bar {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(240, 178, 79, 0.55);
 }
 .waiting-turn {
   display: flex;
@@ -876,16 +969,43 @@ function leave() {
   border: 1px dashed var(--border);
   border-radius: 0.9rem;
 }
-.pulse-dot {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse 1.4s ease-in-out infinite;
+/* 相手の手番: アンバー系で「待ち」を明確に */
+.waiting-turn--opp {
+  border-style: solid;
+  border-color: rgba(240, 178, 79, 0.4);
+  background: rgba(240, 178, 79, 0.06);
+  color: var(--text);
 }
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.75); }
+.waiting-turn--opp b {
+  font-weight: 700;
+}
+.waiting-turn__avatar {
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(240, 178, 79, 0.15);
+  border: 1px solid rgba(240, 178, 79, 0.5);
+  color: var(--amber);
+  font-weight: 800;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  animation: thinkAmber 1.6s ease-in-out infinite;
+}
+.thinking-dots span {
+  display: inline-block;
+  animation: dotBlink 1.4s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes dotBlink {
+  0%, 60%, 100% { opacity: 0.25; }
+  30% { opacity: 1; }
 }
 
 /* ---- 対局終了 ---- */
@@ -942,7 +1062,8 @@ function leave() {
   .reveal-move,
   .pop-enter-active,
   .avatar--think,
-  .pulse-dot {
+  .waiting-turn__avatar,
+  .thinking-dots span {
     transition: none;
     animation: none;
   }

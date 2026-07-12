@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { LobbyRoom } from '~~/shared/types'
+import type { LobbyRoom, RoomView } from '~~/shared/types'
 
 const displayName = useDisplayName()
 const router = useRouter()
@@ -7,6 +7,7 @@ const api = useApi()
 const error = ref<string | null>(null)
 const creating = ref(false)
 const joinCode = ref('')
+const activeRoom = useActiveRoom()
 
 // 部屋作成フォーム
 const form = reactive({
@@ -17,6 +18,24 @@ const form = reactive({
   blindIntervalMinutes: 5,
   actionTimeoutSeconds: 30,
   anteMode: 'bb' as 'bb' | 'none',
+  chipUnit: 100,
+})
+
+// 着席中の部屋があれば「対局に戻る」導線を出す（終了済みなら記録を掃除）
+const resumeRoom = ref<{ code: string; status: string } | null>(null)
+onMounted(async () => {
+  const code = activeRoom.value ?? localStorage.getItem('activeRoomCode')
+  if (!code) return
+  try {
+    const v = await api<RoomView>(`/api/rooms/${code}/state`)
+    if (v.yourSeat !== null && v.room.status !== 'finished') {
+      resumeRoom.value = { code: v.room.code, status: v.room.status }
+    } else {
+      activeRoom.value = null
+    }
+  } catch {
+    activeRoom.value = null
+  }
 })
 
 const { data: rooms, refresh } = await useAsyncData<LobbyRoom[]>(
@@ -49,6 +68,7 @@ async function createRoom() {
         blindIntervalSeconds: form.blindIntervalMinutes * 60,
         actionTimeoutSeconds: form.actionTimeoutSeconds,
         anteMode: form.anteMode,
+        chipUnit: form.chipUnit,
       },
     })
     router.push(`/room/${res.code}`)
@@ -96,6 +116,17 @@ function extractError(e: unknown): string {
       </div>
 
       <p v-if="error" class="error">{{ error }}</p>
+
+      <!-- 進行中の対局へ戻る -->
+      <section v-if="resumeRoom" class="card-panel resume">
+        <div class="resume__info">
+          <strong>{{ resumeRoom.status === 'playing' ? '対局中のテーブルがあります' : '待機中のテーブルがあります' }}</strong>
+          <span class="badge money">{{ resumeRoom.code }}</span>
+        </div>
+        <button class="btn btn--primary" @click="router.push(`/room/${resumeRoom.code}`)">
+          対局に戻る
+        </button>
+      </section>
 
       <!-- コードで参加 -->
       <section class="card-panel">
@@ -186,12 +217,23 @@ function extractError(e: unknown): string {
               <input v-model.number="form.actionTimeoutSeconds" type="number" inputmode="numeric" class="input" min="5" step="5" />
             </div>
           </div>
-          <div class="field">
-            <label>アンティ</label>
-            <select v-model="form.anteMode" class="input">
-              <option value="bb">BBアンティ（BBのみ支払）</option>
-              <option value="none">なし</option>
-            </select>
+          <div class="row">
+            <div class="field">
+              <label>アンティ</label>
+              <select v-model="form.anteMode" class="input">
+                <option value="bb">BBアンティ</option>
+                <option value="none">なし</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>最小チップ単位</label>
+              <select v-model.number="form.chipUnit" class="input">
+                <option :value="1">なし</option>
+                <option :value="25">25</option>
+                <option :value="100">100</option>
+                <option :value="500">500</option>
+              </select>
+            </div>
           </div>
         </details>
 
@@ -396,6 +438,26 @@ ul {
 .empty {
   padding: 0.6rem 0 0.2rem;
   text-align: center;
+}
+
+/* ---- 対局に戻るバナー ---- */
+.resume {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  border-color: rgba(43, 196, 126, 0.45);
+  box-shadow: 0 0 0 1px rgba(43, 196, 126, 0.15), 0 6px 24px rgba(43, 196, 126, 0.12);
+}
+.resume__info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.resume .btn {
+  flex-shrink: 0;
 }
 
 .error {

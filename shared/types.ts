@@ -23,6 +23,8 @@ export interface RoomConfig {
   actionTimeoutSeconds: number
   anteMode: AnteMode
   blindStructure: BlindLevel[]
+  /** 最小チップ単位。ベット/レイズ額はこの倍数のみ（オールインは端数可）。1 = 制限なし */
+  chipUnit: number
 }
 
 /** 各席の公開状態（ホールカードは含めない） */
