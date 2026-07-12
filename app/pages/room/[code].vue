@@ -528,12 +528,15 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 
       <!-- 操作ドック（親指が届く最下部・セーフエリア対応） -->
       <div v-if="room.status !== 'finished'" class="dock-area">
-        <div
-          v-if="!hand.result && hand.actionDeadline"
-          class="timer"
-          :class="{ 'timer--opp': isOppTurn, 'timer--low': !isOppTurn && timePct < 30 }"
-        >
-          <div class="timer__bar" :style="{ width: timePct + '%' }" />
+        <!-- タイマーは常設スロットに置き、手番/結果表示に関わらず位置を固定する -->
+        <div class="timer-slot">
+          <div
+            v-if="!hand.result && hand.actionDeadline"
+            class="timer"
+            :class="{ 'timer--opp': isOppTurn, 'timer--low': !isOppTurn && timePct < 30 }"
+          >
+            <div class="timer__bar" :style="{ width: timePct + '%' }" />
+          </div>
         </div>
 
         <ActionDock
@@ -1136,19 +1139,28 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   padding: 0.45rem 0.6rem calc(0.55rem + var(--safe-bottom));
   background: linear-gradient(180deg, rgba(7, 11, 9, 0), rgba(7, 11, 9, 0.97) 12%, var(--bg) 40%);
   /* 手番/待機でドックの高さが変わってもテーブル（カード位置）が上下しないよう、
-     最大時（タイマー＋サイザー＋アクション行）の高さを常に確保して下寄せする */
+     最大時（タイマー＋サイザー＋アクション行）の高さを常に確保する。
+     タイマーは上部の常設スロット、本文は残り全体（内容は下寄せ）で位置が揺れない */
   min-height: calc(12rem + var(--safe-bottom));
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+}
+.timer-slot {
+  height: 0.3rem;
+  margin-bottom: 0.45rem;
+  flex-shrink: 0;
 }
 .timer {
   position: relative;
-  height: 0.3rem;
+  height: 100%;
   background: rgba(255, 255, 255, 0.07);
   border-radius: 1rem;
-  margin-bottom: 0.45rem;
   overflow: hidden;
+}
+/* 本文（アクションパネル/待機ボックス）は残り高さを使い切る */
+.dock-area :deep(.dock) {
+  flex: 1;
+  justify-content: flex-end;
 }
 .timer__bar {
   height: 100%;
@@ -1163,6 +1175,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   background: rgba(240, 178, 79, 0.55);
 }
 .waiting-turn {
+  flex: 1; /* タイマー位置を固定するため、ドックの残り高さを使い切る */
   display: flex;
   align-items: center;
   justify-content: center;
