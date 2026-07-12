@@ -125,6 +125,20 @@ const oppPillLabel = computed(() => {
   return null
 })
 
+// ショーダウンで公開された両者のハンド（ボード上部に並べて表示）
+const showdownHands = computed(() => {
+  const r = hand.value?.result
+  if (!r?.showdown || yourSeat.value === null) return null
+  return [...r.showdown]
+    .sort((a) => (a.seat === yourSeat.value ? -1 : 1)) // 自分を左に
+    .map((e) => ({
+      seat: e.seat,
+      cards: e.cards,
+      label: e.seat === yourSeat.value ? 'あなた' : (opponent.value?.displayName ?? '相手'),
+      win: r.winners.includes(e.seat),
+    }))
+})
+
 // 結果の勝敗（バナーの色分け用）
 const resultOutcome = computed<'win' | 'lose' | 'split' | null>(() => {
   const r = hand.value?.result
@@ -454,6 +468,23 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 
         <!-- ボード＆ポット -->
         <section class="board-area">
+          <!-- ショーダウン: 両者のハンドをボード上部に並べる（ランアウト中から表示） -->
+          <transition name="sdfade">
+            <div v-if="showdownHands" class="sd-hands">
+              <div
+                v-for="h in showdownHands"
+                :key="h.seat"
+                class="sd-hand"
+                :class="{ 'sd-hand--win': resultVisible && h.win, 'sd-hand--lose': resultVisible && !h.win }"
+              >
+                <span class="sd-hand__label">{{ h.label }}</span>
+                <div class="sd-hand__cards">
+                  <PlayingCard v-for="c in h.cards" :key="`sd-${h.seat}-${c}`" :card="c" />
+                </div>
+              </div>
+            </div>
+          </transition>
+
           <div class="pot">
             <span class="pot__label">ポット</span>
             <span class="pot__value money">{{ formatStack(displayPot) }}</span>
@@ -986,6 +1017,68 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   color: var(--amber);
 }
 
+/* ---- ショーダウンのハンド表示（ボード上部の帯・レイアウトを押し下げない） ---- */
+.sd-hands {
+  position: absolute;
+  bottom: calc(100% + 0.35rem);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.7rem;
+  z-index: 4;
+  pointer-events: none;
+  max-width: 100%;
+}
+.sd-hand {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: rgba(11, 13, 16, 0.85);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.8rem;
+  padding: 0.3rem 0.55rem;
+  transition: border-color 0.3s, box-shadow 0.3s, opacity 0.3s;
+}
+.sd-hand__label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--muted);
+  max-width: 5.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sd-hand__cards {
+  display: flex;
+  gap: 0.25rem;
+}
+.sd-hand__cards :deep(.card) {
+  --w: clamp(1.9rem, 9vw, 2.3rem);
+}
+.sd-hand--win {
+  border-color: rgba(43, 196, 126, 0.65);
+  box-shadow: 0 0 16px rgba(43, 196, 126, 0.35);
+}
+.sd-hand--win .sd-hand__label {
+  color: var(--accent);
+}
+.sd-hand--lose {
+  opacity: 0.62;
+}
+.sdfade-enter-active {
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+.sdfade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.sdfade-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+}
+.sdfade-leave-to {
+  opacity: 0;
+}
+
 /* ---- ボード ---- */
 .board-area {
   position: relative;
@@ -1097,12 +1190,12 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   color: var(--muted);
   margin-top: 0.4rem;
 }
-/* ---- 手番フラッシュ ---- */
+/* ---- 手番フラッシュ（ボードを隠さないよう、ボード下の帯に表示） ---- */
 .turn-flash {
   position: absolute;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  top: calc(100% + 0.45rem);
+  transform: translateX(-50%);
   z-index: 6;
   background: var(--accent);
   color: #052a1a;
@@ -1124,7 +1217,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 }
 .pop-enter-from {
   opacity: 0;
-  transform: translate(-50%, -50%) scale(0.8);
+  transform: translateX(-50%) translateY(8px) scale(0.85);
 }
 .pop-leave-to {
   opacity: 0;
@@ -1340,6 +1433,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   .pop-enter-active,
   .result-pop-enter-active,
   .bubble-enter-active,
+  .sdfade-enter-active,
   .allin-marker,
   .avatar--think,
   .waiting-turn__avatar,
