@@ -300,6 +300,16 @@ async function copyCode() {
   } catch { /* noop */ }
 }
 
+// 招待URL（開けばそのまま入室ゲートに入れる）のコピー
+const copiedUrl = ref(false)
+async function copyUrl() {
+  try {
+    await navigator.clipboard.writeText(`${location.origin}/room/${code}`)
+    copiedUrl.value = true
+    setTimeout(() => (copiedUrl.value = false), 1500)
+  } catch { /* noop */ }
+}
+
 async function doJoin() {
   if (!displayName.value.trim()) return
   joining.value = true
@@ -378,8 +388,11 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
         <p class="muted small">下のコードを相手に共有してください</p>
         <div class="bigcode money" role="button" @click="copyCode">
           {{ room.code }}
-          <span class="bigcode__hint">{{ copied ? 'コピーしました ✓' : 'タップしてコピー' }}</span>
+          <span class="bigcode__hint">{{ copied ? 'コピーしました ✓' : 'タップしてコードをコピー' }}</span>
         </div>
+        <button class="btn btn--ghost full share-url" @click="copyUrl">
+          {{ copiedUrl ? '✓ URLをコピーしました' : '🔗 招待URLをコピー' }}
+        </button>
         <div class="waiting-players">
           <div v-for="p in state?.players" :key="p.seat" class="wp">
             <span class="dot" :class="{ on: p.connected }" />{{ p.displayName }}{{ p.isYou ? '（あなた）' : '' }}
@@ -685,6 +698,9 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
   letter-spacing: 0.1em;
   text-indent: 0;
   color: var(--muted);
+}
+.share-url {
+  margin: -0.35rem 0 1rem;
 }
 .waiting-players {
   display: flex;
