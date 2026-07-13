@@ -24,7 +24,8 @@ export function useRoom(code: string) {
   let ticker: ReturnType<typeof setInterval> | null = null
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
   let handledTimeoutFor: string | null = null
-  let aiPokedFor: string | null = null
+  let aiPokeKey: string | null = null
+  let aiPokeDueAt = 0
   let advancedHand = -1
   // オールインのランアウト演出中は次ハンド送りを遅らせる（結果到着時に算出）
   let runoutExtraMs = 0
@@ -100,7 +101,10 @@ export function useRoom(code: string) {
     const s = state.value
     if (!s || !s.hand) return
 
-    // AI の手番 → 少しの「考える時間」を置いて ai-act をポーク（サーバーが手番を検証・冪等）
+    // AI の手番が残っている場合の復旧ポーク。
+    // AI は通常サーバー側で同期的に進む（人間のアクション/配札/タイムアウトの
+    // リクエスト内で処理される）ため、ここに来るのはその処理が失敗した時か
+    // 一時的な中間状態のみ。少し待ってから ai-act を叩き、直るまで数秒おきに再試行する。
     const aiSeat = s.players.find((p) => p.isAi)?.seat
     if (
       aiSeat !== undefined &&
@@ -110,12 +114,12 @@ export function useRoom(code: string) {
       s.hand.toActSeat === aiSeat
     ) {
       const key = `${s.hand.id}:${s.hand.actionDeadline}`
-      if (aiPokedFor !== key) {
-        aiPokedFor = key
-        const thinkMs = 700 + Math.random() * 1500
-        setTimeout(() => {
-          api(`/api/rooms/${code}/ai-act`, { method: 'POST' }).catch(() => {})
-        }, thinkMs)
+      if (aiPokeKey !== key) {
+        aiPokeKey = key
+        aiPokeDueAt = now.value + 1200
+      } else if (now.value >= aiPokeDueAt) {
+        aiPokeDueAt = now.value + 4000
+        api(`/api/rooms/${code}/ai-act`, { method: 'POST' }).catch(() => {})
       }
     }
 
