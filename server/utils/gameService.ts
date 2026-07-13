@@ -11,6 +11,7 @@ import {
   startHand,
   type EngineHand,
 } from '../game/engine'
+import { decideAiAction } from '../game/ai/decide'
 import { GameError } from '../game/engine'
 import { currentLevel, defaultBlindStructure, nextLevelAt, snapStructureToChipUnit } from '../game/blinds'
 import {
@@ -40,7 +41,12 @@ export interface CreateRoomInput {
   startingBb?: number
   blindStructure?: BlindLevel[]
   chipUnit?: number
+  /** true なら AI を対戦相手として着席させ、即座に対局を開始する */
+  vsAi?: boolean
 }
+
+/** AI 席の表示名 */
+export const AI_DISPLAY_NAME = 'GTO AI'
 
 function randomCode(len = 6): string {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' // 紛らわしい文字を除外
@@ -80,7 +86,7 @@ export async function createRoom(db: DB, input: CreateRoomInput): Promise<{ code
       code,
       name: input.name ?? null,
       status: 'waiting',
-      is_public: input.isPublic ?? true,
+      is_public: input.vsAi ? false : (input.isPublic ?? true), // AI 部屋はロビーに出さない
       created_by: input.userId,
       initial_stack: initialStack,
       blind_interval_seconds: input.blindIntervalSeconds ?? 300,
@@ -102,6 +108,21 @@ export async function createRoom(db: DB, input: CreateRoomInput): Promise<{ code
     connected: true,
   })
   if (pErr) throw new GameError(`座席の作成に失敗しました: ${pErr.message}`)
+
+  // AI 対戦: AI を席1に着席させ、待機なしで対局を開始する
+  if (input.vsAi) {
+    const { error: aiErr } = await db.from('room_players').insert({
+      room_id: room.id,
+      user_id: null,
+      is_ai: true,
+      seat: 1,
+      display_name: AI_DISPLAY_NAME,
+      stack: initialStack,
+      connected: true,
+    })
+    if (aiErr) throw new GameError(`AI席の作成に失敗しました: ${aiErr.message}`)
+    await beginMatch(db, room.id)
+  }
 
   return { code: room.code, id: room.id }
 }
@@ -157,6 +178,11 @@ export async function startGame(db: DB, input: { code: string; userId: string })
     throw new GameError('開始できるのはこの部屋の参加者のみです')
   }
 
+  await beginMatch(db, room.id)
+}
+
+/** 対局を開始する（ボタン抽選 → 1ハンド目の配札）。作成時 AI 対戦でも使用 */
+async function beginMatch(db: DB, roomId: string): Promise<void> {
   const button = Math.random() < 0.5 ? 0 : 1
   await db
     .from('rooms')
@@ -167,9 +193,9 @@ export async function startGame(db: DB, input: { code: string; userId: string })
       button_seat: button,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', room.id)
+    .eq('id', roomId)
 
-  await dealNextHand(db, room.id)
+  await dealNextHand(db, roomId)
 }
 
 // ------------------------------------------------------------------
@@ -311,6 +337,52 @@ export async function claimTimeout(db: DB, input: { code: string; userId: string
 }
 
 // ------------------------------------------------------------------
+// AI の手番を進める（クライアントが AI の手番を検知して請求・冪等）
+//
+// タイムアウト請求と同じ「クライアントがポーク → サーバーが検証して実行」
+// パターン。サーバーレスでは常駐プロセスを持てないため、AI のアクションも
+// リクエスト駆動で行う。AI の手番でなければ何もしない。
+// 万一このエンドポイントが呼ばれなくても、既存のタイムアウト処理が
+// AI を自動チェック/フォールドさせるため対局は止まらない。
+// ------------------------------------------------------------------
+export async function applyAiAction(db: DB, input: { code: string }): Promise<void> {
+  const room = await getRoomByCode(db, input.code)
+  if (room.status !== 'playing') return
+
+  const { data: aiPlayer } = await db
+    .from('room_players')
+    .select('seat')
+    .eq('room_id', room.id)
+    .eq('is_ai', true)
+    .maybeSingle()
+  if (!aiPlayer) throw new GameError('この部屋に AI はいません')
+
+  const { row, engine } = await loadCurrentHand(db, room.id)
+  if (engine.result || engine.toActSeat !== aiPlayer.seat) return // AI の手番でなければ何もしない
+
+  const decision = decideAiAction(engine, aiPlayer.seat, room.chip_unit ?? 1)
+  const emitted = applyAction(engine, aiPlayer.seat, decision, room.chip_unit ?? 1)
+
+  await persistHand(db, {
+    roomId: room.id,
+    engine,
+    isNew: false,
+    handId: row.id,
+    version: row.version,
+    timeoutSeconds: room.action_timeout_seconds,
+  })
+
+  await db.from('actions').insert({
+    hand_id: row.id,
+    seat: aiPlayer.seat,
+    user_id: null,
+    street: emitted.street,
+    type: emitted.type,
+    amount: emitted.amount,
+  })
+}
+
+// ------------------------------------------------------------------
 // 次ハンドへ進む（ハンド終了後、クライアントが結果表示後に呼ぶ・冪等）
 // ------------------------------------------------------------------
 export async function advanceToNextHand(db: DB, input: { code: string; userId: string }): Promise<void> {
@@ -331,7 +403,7 @@ export async function buildRoomView(
   const room = await getRoomByCode(db, input.code)
   const { data: players } = await db
     .from('room_players')
-    .select('seat, display_name, stack, connected, user_id')
+    .select('seat, display_name, stack, connected, user_id, is_ai')
     .eq('room_id', room.id)
     .order('seat')
 
@@ -406,7 +478,8 @@ export async function buildRoomView(
       displayName: p.display_name,
       stack: p.stack,
       connected: p.connected,
-      isYou: p.user_id === input.userId,
+      isYou: p.user_id !== null && p.user_id === input.userId,
+      isAi: !!p.is_ai,
     })),
     yourSeat,
     hand: handPublic,

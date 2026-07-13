@@ -18,6 +18,7 @@ export default defineEventHandler(async (event) => {
       anteMode: body?.anteMode === 'none' ? 'none' : 'bb',
       startingBb: numberOr(body?.startingBb, 200),
       chipUnit: numberOr(body?.chipUnit, 100),
+      vsAi: body?.vsAi === true,
     }),
   )
 })

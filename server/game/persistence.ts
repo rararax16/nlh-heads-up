@@ -31,7 +31,7 @@ export interface HandRow {
 /** seats jsonb に保存する席状態（ホールカードは含めない） */
 interface StoredSeat {
   seat: number
-  userId: string
+  userId: string | null // null = AI 席
   stack: number
   committed: number
   streetCommitted: number
@@ -42,7 +42,7 @@ interface StoredSeat {
 
 export interface HoleRow {
   seat: number
-  user_id: string
+  user_id: string | null // null = AI 席
   cards: Card[]
   revealed: boolean
 }

@@ -86,6 +86,7 @@ export interface PlayerView {
   stack: number
   connected: boolean
   isYou: boolean
+  isAi: boolean
 }
 
 export interface RoomView {
