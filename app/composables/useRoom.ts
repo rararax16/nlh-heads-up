@@ -24,6 +24,7 @@ export function useRoom(code: string) {
   let ticker: ReturnType<typeof setInterval> | null = null
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
   let handledTimeoutFor: string | null = null
+  let aiPokedFor: string | null = null
   let advancedHand = -1
   // オールインのランアウト演出中は次ハンド送りを遅らせる（結果到着時に算出）
   let runoutExtraMs = 0
@@ -98,6 +99,25 @@ export function useRoom(code: string) {
     now.value = Date.now()
     const s = state.value
     if (!s || !s.hand) return
+
+    // AI の手番 → 少しの「考える時間」を置いて ai-act をポーク（サーバーが手番を検証・冪等）
+    const aiSeat = s.players.find((p) => p.isAi)?.seat
+    if (
+      aiSeat !== undefined &&
+      s.room.status === 'playing' &&
+      s.hand &&
+      !s.hand.result &&
+      s.hand.toActSeat === aiSeat
+    ) {
+      const key = `${s.hand.id}:${s.hand.actionDeadline}`
+      if (aiPokedFor !== key) {
+        aiPokedFor = key
+        const thinkMs = 700 + Math.random() * 1500
+        setTimeout(() => {
+          api(`/api/rooms/${code}/ai-act`, { method: 'POST' }).catch(() => {})
+        }, thinkMs)
+      }
+    }
 
     // アクション期限切れ → タイムアウト請求（サーバーが期限を検証）
     const hand = s.hand

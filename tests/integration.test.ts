@@ -5,6 +5,7 @@ import {
   joinRoom,
   startGame,
   applyPlayerAction,
+  applyAiAction,
   advanceToNextHand,
   buildRoomView,
 } from '../server/utils/gameService'
@@ -90,4 +91,78 @@ describe('フルゲーム統合フロー', () => {
     const total = final.players.reduce((sum, p) => sum + p.stack, 0)
     expect(total).toBe(initialStack * 2)
   }, 30000)
+})
+
+describe('AI 対戦統合フロー', () => {
+  it('AI部屋は作成と同時に開始され、決着までAIと対局できる（カード秘匿・チップ保存）', async () => {
+    const initialStack = 400
+    const { code } = await createRoom(db, {
+      userId: userA,
+      displayName: 'Alice',
+      initialStack,
+      startingBb: 100, // 4BB スタート → 数ハンドで決着
+      blindIntervalSeconds: 100000,
+      actionTimeoutSeconds: 30,
+      anteMode: 'bb',
+      vsAi: true,
+    })
+
+    // 作成直後から対局中・席1が AI・部屋は非公開
+    let view = await buildRoomView(db, { code, userId: userA })
+    expect(view.room.status).toBe('playing')
+    expect(view.room.isPublic).toBe(false)
+    expect(view.yourSeat).toBe(0)
+    const ai = view.players.find((p) => p.isAi)
+    expect(ai?.seat).toBe(1)
+    expect(ai?.displayName).toBe('GTO AI')
+
+    // AI 部屋には第三者は入れない（満席）
+    await expect(
+      joinRoom(db, { code, userId: userB, displayName: 'Bob' }),
+    ).rejects.toThrow('満席')
+
+    // 人間は常にコール/チェック、AI の手番は applyAiAction で進める
+    let guard = 0
+    while (guard++ < 200) {
+      view = await buildRoomView(db, { code, userId: userA })
+      if (view.room.status === 'finished') break
+
+      // AI のホールカードはショーダウン公開以外でクライアントに渡らない
+      expect(view.myCards === null || view.myCards.length === 2).toBe(true)
+
+      const hand = view.hand
+      if (!hand || hand.result) {
+        await advanceToNextHand(db, { code, userId: userA })
+        continue
+      }
+      if (hand.toActSeat === 1) {
+        await applyAiAction(db, { code })
+        continue
+      }
+      const legal = view.legalActions!
+      if (legal.canCall) {
+        await applyPlayerAction(db, { code, userId: userA, type: 'call' })
+      } else if (legal.canCheck) {
+        await applyPlayerAction(db, { code, userId: userA, type: 'check' })
+      } else {
+        await applyPlayerAction(db, { code, userId: userA, type: 'fold' })
+      }
+    }
+
+    const final = await buildRoomView(db, { code, userId: userA })
+    expect(final.room.status).toBe('finished')
+    const total = final.players.reduce((sum, p) => sum + p.stack, 0)
+    expect(total).toBe(initialStack * 2)
+
+    // AI の hole_cards 行は user_id = null で保存されている
+    const { data: room } = await db.from('rooms').select('id').eq('code', code).single()
+    const { data: hands } = await db.from('hands').select('id').eq('room_id', room!.id)
+    const { data: aiHoles } = await db
+      .from('hole_cards')
+      .select('user_id, seat')
+      .in('hand_id', (hands ?? []).map((h) => h.id))
+      .eq('seat', 1)
+    expect(aiHoles!.length).toBeGreaterThan(0)
+    expect(aiHoles!.every((h) => h.user_id === null)).toBe(true)
+  }, 60000)
 })

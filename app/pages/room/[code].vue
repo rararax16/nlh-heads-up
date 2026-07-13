@@ -436,10 +436,11 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           </transition>
           <div class="plaque">
             <span class="avatar" :class="{ 'avatar--think': isOppTurn }">
-              {{ (opponent?.displayName ?? '?').slice(0, 1) }}
+              {{ opponent?.isAi ? '🤖' : (opponent?.displayName ?? '?').slice(0, 1) }}
             </span>
             <span class="plaque__name">
               {{ opponent?.displayName ?? '（空席）' }}
+              <span v-if="opponent?.isAi" class="ai-tag">AI</span>
               <span v-if="isButton(oppSeat)" class="dealer">D</span>
             </span>
             <button
@@ -923,6 +924,17 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 }
 .stack-toggle:active {
   opacity: 0.65;
+}
+.ai-tag {
+  background: var(--accent-soft);
+  border: 1px solid rgba(43, 196, 126, 0.45);
+  color: var(--accent);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  border-radius: 0.35rem;
+  padding: 0.05rem 0.3rem;
+  flex-shrink: 0;
 }
 .dealer {
   background: #f5f6f7;

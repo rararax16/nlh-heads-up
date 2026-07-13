@@ -11,6 +11,7 @@ const activeRoom = useActiveRoom()
 
 // 部屋作成フォーム
 const form = reactive({
+  opponent: 'human' as 'human' | 'ai',
   name: '',
   isPublic: true,
   initialStack: 10000,
@@ -62,7 +63,8 @@ async function createRoom() {
       body: {
         displayName: displayName.value.trim(),
         name: form.name.trim() || null,
-        isPublic: form.isPublic,
+        isPublic: form.opponent === 'ai' ? false : form.isPublic,
+        vsAi: form.opponent === 'ai',
         initialStack: form.initialStack,
         startingBb: form.startingBb,
         blindIntervalSeconds: form.blindIntervalMinutes * 60,
@@ -179,10 +181,20 @@ function extractError(e: unknown): string {
       <section class="card-panel">
         <h2><span class="h-icon">＋</span> 部屋を作る</h2>
         <div class="field">
+          <label>対戦相手</label>
+          <select v-model="form.opponent" class="input">
+            <option value="human">友達と対戦（コード共有）</option>
+            <option value="ai">AI と対戦（GTO 練習）</option>
+          </select>
+        </div>
+        <p v-if="form.opponent === 'ai'" class="muted small ai-note">
+          ショートスタックは Nash 均衡（プッシュ/フォールド）、それ以外は GTO 頻度に基づいて打つ練習用 AI です。作成と同時に対局が始まります。
+        </p>
+        <div class="field">
           <label>部屋名（任意）</label>
           <input v-model="form.name" class="input" placeholder="フレンドマッチ" maxlength="30" />
         </div>
-        <div class="field">
+        <div v-if="form.opponent === 'human'" class="field">
           <label>公開設定</label>
           <select v-model="form.isPublic" class="input">
             <option :value="true">公開（ロビーに表示）</option>
@@ -238,7 +250,7 @@ function extractError(e: unknown): string {
         </details>
 
         <button class="btn btn--primary full" :disabled="creating" @click="createRoom">
-          {{ creating ? '作成中…' : '部屋を作成して入室' }}
+          {{ creating ? '作成中…' : form.opponent === 'ai' ? 'AI と対局を開始' : '部屋を作成して入室' }}
         </button>
       </section>
     </div>
@@ -308,6 +320,10 @@ h2 {
   margin-bottom: 0.85rem;
   flex: 1;
   min-width: 0;
+}
+.ai-note {
+  margin: -0.35rem 0 0.85rem;
+  line-height: 1.5;
 }
 .row {
   display: flex;

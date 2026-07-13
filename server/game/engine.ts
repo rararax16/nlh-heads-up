@@ -13,7 +13,7 @@ import { evaluateShowdown } from './evaluator'
 
 export interface EngineSeat {
   seat: number
-  userId: string
+  userId: string | null // null = AI 席
   stack: number
   committed: number        // 当ハンド累計拠出
   streetCommitted: number  // 現ストリート拠出
@@ -51,7 +51,7 @@ export interface StartHandInput {
   bb: number
   ante: number
   anteMode: 'none' | 'bb'
-  players: { seat: number; userId: string; stack: number }[]
+  players: { seat: number; userId: string | null; stack: number }[]
   deck?: Card[] // テスト用の決定的デッキ注入（省略時は暗号論的シャッフル）
 }
 
