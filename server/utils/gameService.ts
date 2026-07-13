@@ -262,6 +262,9 @@ export async function dealNextHand(db: DB, roomId: string): Promise<void> {
     isNew: true,
     timeoutSeconds: room.action_timeout_seconds,
   })
+
+  // 新しいハンドが AI の手番（AI がボタン=SB）で始まる場合はサーバー側で進める
+  await runAiTurnsSafely(db, room)
 }
 
 // ------------------------------------------------------------------
@@ -301,6 +304,9 @@ export async function applyPlayerAction(
     type: emitted.type,
     amount: emitted.amount,
   })
+
+  // 人間のアクションで AI の手番になったらサーバー側で続けて進める
+  await runAiTurnsSafely(db, room)
 }
 
 // ------------------------------------------------------------------
@@ -334,52 +340,80 @@ export async function claimTimeout(db: DB, input: { code: string; userId: string
     type: emitted.type === 'check' ? 'check' : 'fold',
     amount: 0,
   })
+
+  // タイムアウト処理の結果 AI の手番になった場合もサーバー側で進める
+  await runAiTurnsSafely(db, room)
 }
 
 // ------------------------------------------------------------------
-// AI の手番を進める（クライアントが AI の手番を検知して請求・冪等）
+// AI の手番を進める
 //
-// タイムアウト請求と同じ「クライアントがポーク → サーバーが検証して実行」
-// パターン。サーバーレスでは常駐プロセスを持てないため、AI のアクションも
-// リクエスト駆動で行う。AI の手番でなければ何もしない。
-// 万一このエンドポイントが呼ばれなくても、既存のタイムアウト処理が
-// AI を自動チェック/フォールドさせるため対局は止まらない。
+// AI はサーバー駆動: AI の手番が生まれるリクエスト（人間のアクション/
+// 配札/タイムアウト請求）の中で runAiTurns が同期的に AI を進めるため、
+// 通常はクライアントの関与なしで対局が進む。
+// /ai-act エンドポイント（applyAiAction）は、途中で失敗した場合などに
+// クライアントが復旧をポークするための保険として残している（冪等）。
 // ------------------------------------------------------------------
 export async function applyAiAction(db: DB, input: { code: string }): Promise<void> {
   const room = await getRoomByCode(db, input.code)
   if (room.status !== 'playing') return
+  await runAiTurns(db, room)
+}
 
+/**
+ * 現在のハンドで AI の手番が続く限りアクションを適用する。
+ * ストリート進行で連続して AI の手番になるケース（AI が BB で
+ * フロップ先手など）があるためループで進める。
+ * 並行リクエストと競合した場合は楽観ロックで例外になるので中断する
+ * （相手側のリクエストが AI を進めるため対局は止まらない）。
+ */
+async function runAiTurns(db: DB, room: { id: string; chip_unit: number | null; action_timeout_seconds: number }): Promise<void> {
   const { data: aiPlayer } = await db
     .from('room_players')
     .select('seat')
     .eq('room_id', room.id)
     .eq('is_ai', true)
     .maybeSingle()
-  if (!aiPlayer) throw new GameError('この部屋に AI はいません')
+  if (!aiPlayer) return
 
-  const { row, engine } = await loadCurrentHand(db, room.id)
-  if (engine.result || engine.toActSeat !== aiPlayer.seat) return // AI の手番でなければ何もしない
+  for (let i = 0; i < 8; i++) { // 1リクエスト内の安全上限（通常は1〜3回で人間の手番になる）
+    const { row, engine } = await loadCurrentHand(db, room.id)
+    if (engine.result || engine.toActSeat !== aiPlayer.seat) return
 
-  const decision = decideAiAction(engine, aiPlayer.seat, room.chip_unit ?? 1)
-  const emitted = applyAction(engine, aiPlayer.seat, decision, room.chip_unit ?? 1)
+    const decision = decideAiAction(engine, aiPlayer.seat, room.chip_unit ?? 1)
+    const emitted = applyAction(engine, aiPlayer.seat, decision, room.chip_unit ?? 1)
 
-  await persistHand(db, {
-    roomId: room.id,
-    engine,
-    isNew: false,
-    handId: row.id,
-    version: row.version,
-    timeoutSeconds: room.action_timeout_seconds,
-  })
+    await persistHand(db, {
+      roomId: room.id,
+      engine,
+      isNew: false,
+      handId: row.id,
+      version: row.version,
+      timeoutSeconds: room.action_timeout_seconds,
+    })
 
-  await db.from('actions').insert({
-    hand_id: row.id,
-    seat: aiPlayer.seat,
-    user_id: null,
-    street: emitted.street,
-    type: emitted.type,
-    amount: emitted.amount,
-  })
+    await db.from('actions').insert({
+      hand_id: row.id,
+      seat: aiPlayer.seat,
+      user_id: null,
+      street: emitted.street,
+      type: emitted.type,
+      amount: emitted.amount,
+    })
+  }
+}
+
+/**
+ * AI の手番なら進める（人間のリクエストのフック用）。
+ * ここでの失敗は元のリクエスト（人間のアクション等）を巻き込まない。
+ * 失敗しても、クライアントの /ai-act ポークとタイムアウト処理が復旧させる。
+ */
+async function runAiTurnsSafely(db: DB, room: { id: string; chip_unit: number | null; action_timeout_seconds: number }): Promise<void> {
+  try {
+    await runAiTurns(db, room)
+  } catch (e) {
+    console.error('AI の手番処理に失敗しました（ポークで復旧します）:', e)
+  }
 }
 
 // ------------------------------------------------------------------
@@ -571,7 +605,7 @@ async function persistHand(
       })),
     )
   } else {
-    const { error } = await db
+    const { data: updated, error } = await db
       .from('hands')
       .update({
         ...row,
@@ -581,7 +615,12 @@ async function persistHand(
       })
       .eq('id', args.handId!)
       .eq('version', args.version ?? 0) // 楽観ロック
+      .select('id')
     if (error) throw new GameError(`ハンド更新に失敗しました: ${error.message}`)
+    // 楽観ロック不成立（並行リクエストが先に更新）を黙って握り潰さない
+    if (!updated || updated.length === 0) {
+      throw new GameError('他の処理と競合しました。最新の状態で再試行してください')
+    }
 
     await db.from('hand_secrets').update({ deck }).eq('hand_id', args.handId!)
     // ショーダウン公開時はホールカードの revealed を更新
